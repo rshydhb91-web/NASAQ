@@ -36,6 +36,17 @@ jobs:
       - name: Build Release APK
         run: flutter build apk --release
 
+      - name: Check APK information
+        run: |
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "=== APK SIZE ==="
+          ls -lh "$APK"
+          echo "=== PACKAGE INFORMATION ==="
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | head -30
+          echo "=== SIGNATURE VERIFICATION ==="
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
