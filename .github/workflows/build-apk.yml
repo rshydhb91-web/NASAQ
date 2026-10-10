@@ -37,7 +37,10 @@ jobs:
           flutter create --platforms=android \
             --project-name nasaq_app \
             --org com.nasaq .
-
+      - name: Set NASAQ package ID
+        run: |
+          sed -i 's/applicationId = "com.nasaq.nasaq_app"/applicationId = "com.nasaq.app"/' android/app/build.gradle.kts
+          grep 'applicationId' android/app/build.gradle.kts
       - name: Configure NASAQ application
         run: |
           python3 - <<'PY'
