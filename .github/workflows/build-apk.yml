@@ -1,118 +1,3 @@
-
-name: Build NASAQ APK
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '.github/workflows/create-signing-key.yml'
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - name: Create Android project files
-        run: |
-          flutter create --platforms=android --project-name nasaq_app --org com.nasaq .
-
-      - name: Enable Internet permission
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("android/app/src/main/AndroidManifest.xml")
-          s = p.read_text()
-
-          permission = '<uses-permission android:name="android.permission.INTERNET" />'
-
-          if permission not in s:
-              s = s.replace(
-                  "<application",
-                  permission + "\n    <application",
-                  1
-              )
-
-          p.write_text(s)
-          print("Internet permission enabled")
-          PY
-
-      - name: Set NASAQ application name
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("android/app/src/main/AndroidManifest.xml")
-          s = p.read_text()
-
-          s = s.replace(
-              'android:label="nasaq_app"',
-              'android:label="نَسَق"'
-          )
-
-          p.write_text(s)
-          print("NASAQ application name configured")
-          PY
-
-      - name: Install image processing library
-        run: python3 -m pip install --user Pillow
-
-      - name: Generate NASAQ application icon
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          from PIL import Image
-
-          source = Path(
-              "file_000000007d7081f4959b03c24b34beb7.png"
-          )
-
-          if not source.is_file():
-              raise SystemExit(
-                  "NASAQ icon file not found in repository root"
-              )
-
-          image = Image.open(source).convert("RGBA")
-
-          sizes = {
-              "mipmap-mdpi": 48,
-              "mipmap-hdpi": 72,
-              "mipmap-xhdpi": 96,
-              "mipmap-xxhdpi": 144,
-              "mipmap-xxxhdpi": 192,
-          }
-
-          for folder, size in sizes.items():
-              target = Path("android/app/src/main/res") / folder
-              target.mkdir(parents=True, exist_ok=True)
-
-              icon = image.resize(
-                  (size, size),
-                  Image.Resampling.LANCZOS
-              )
-
-              icon.save(target / "ic_launcher.png")
-
-          print("NASAQ application icons generated")
-          PY
-
       - name: Decrypt NASAQ signing key
         env:
           BACKUP_PASSWORD: ${{ secrets.NASAQ_BACKUP_PASSWORD }}
@@ -120,105 +5,40 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -n "$BACKUP_PASSWORD"
-          test -n "$KEY_PASSWORD"
-          test -f nasaq-release.jks.enc
+          if [ -z "$BACKUP_PASSWORD" ]; then
+            echo "::error::BACKUP_PASSWORD secret is empty"
+            exit 1
+          fi
 
-          openssl enc -d -aes-256-cbc \
+          if [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::KEY_PASSWORD secret is empty"
+            exit 1
+          fi
+
+          if [ ! -f nasaq-release.jks.enc ]; then
+            echo "::error::Encrypted signing file is missing"
+            exit 1
+          fi
+
+          echo "Encrypted signing file found"
+
+          if ! openssl enc -d -aes-256-cbc \
             -pbkdf2 \
             -in nasaq-release.jks.enc \
             -out android/app/nasaq-release.jks \
-            -pass env:BACKUP_PASSWORD
+            -pass env:BACKUP_PASSWORD 2>/dev/null; then
+            echo "::error::Unable to decrypt signing file"
+            exit 1
+          fi
 
-          keytool -list \
+          echo "Signing file decrypted"
+
+          if ! keytool -list \
             -keystore android/app/nasaq-release.jks \
             -storepass env:KEY_PASSWORD \
-            -alias nasaq > /dev/null
+            -alias nasaq > /dev/null 2>&1; then
+            echo "::error::Unable to verify keystore password or alias"
+            exit 1
+          fi
 
-          echo "Signing key verified"
-
-      - name: Configure release signing
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("android/app/build.gradle.kts")
-          s = p.read_text()
-
-          old = 'signingConfig = signingConfigs.getByName("debug")'
-
-          if old not in s:
-              raise SystemExit(
-                  "Expected Flutter signing configuration not found"
-              )
-
-          if "signingConfigs {" in s:
-              raise SystemExit(
-                  "Unexpected existing signing configuration"
-              )
-
-          config = '''
-              signingConfigs {
-                  create("nasaqRelease") {
-                      storeFile = file("nasaq-release.jks")
-                      storePassword = System.getenv("NASAQ_KEYSTORE_PASSWORD")
-                      keyAlias = "nasaq"
-                      keyPassword = System.getenv("NASAQ_KEYSTORE_PASSWORD")
-                  }
-              }
-
-          '''
-
-          if "buildTypes {" not in s:
-              raise SystemExit(
-                  "Android buildTypes section not found"
-              )
-
-          s = s.replace(
-              "buildTypes {",
-              config + "buildTypes {",
-              1
-          )
-
-          s = s.replace(
-              old,
-              'signingConfig = signingConfigs.getByName("nasaqRelease")',
-              1
-          )
-
-          p.write_text(s)
-          print("NASAQ release signing configured")
-          PY
-
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Build signed release APK
-        env:
-          NASAQ_KEYSTORE_PASSWORD: ${{ secrets.NASAQ_KEYSTORE_PASSWORD }}
-        run: flutter build apk --release
-
-      - name: Verify APK and signature
-        run: |
-          set -euo pipefail
-
-          APK=build/app/outputs/flutter-apk/app-release.apk
-          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-
-          echo "=== APK SIZE ==="
-          ls -lh "$APK"
-
-          echo "=== PACKAGE INFORMATION ==="
-          "$BUILD_TOOLS/aapt" dump badging "$APK" | head -30
-
-          echo "=== INTERNET PERMISSION ==="
-          "$BUILD_TOOLS/aapt" dump permissions "$APK" | grep android.permission.INTERNET
-
-          echo "=== SIGNATURE VERIFICATION ==="
-          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
-
-      - name: Upload signed APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: NASAQ-Signed-Release-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          echo "Signing key verified successfully"
