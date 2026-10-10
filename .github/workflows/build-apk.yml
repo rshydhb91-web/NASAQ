@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: read
-
+  actions: read
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -122,6 +122,26 @@ jobs:
 
           print("NASAQ application icon generated")
           PY
+
+      - name: Download signing key from run 4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p signing-download
+
+          gh run download 38051340102 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name NASAQ-Encrypted-Signing-Key \
+            --dir signing-download
+
+          test -s signing-download/nasaq-release.jks.enc
+
+          cp signing-download/nasaq-release.jks.enc \
+            nasaq-release.jks.enc
+
+          echo "Signing key downloaded from run 4"
 
       - name: Check signing file and secrets
         env:
