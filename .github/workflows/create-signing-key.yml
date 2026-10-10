@@ -1,0 +1,54 @@
+name: Create NASAQ Signing Key
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-key:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate signing key
+        env:
+          KEY_PASSWORD: ${{ secrets.NASAQ_KEYSTORE_PASSWORD }}
+        run: |
+          test -n "$KEY_PASSWORD" || exit 1
+
+          keytool -genkeypair \
+            -keystore nasaq-release.jks \
+            -alias nasaq \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 10000 \
+            -storepass:env KEY_PASSWORD \
+            -keypass:env KEY_PASSWORD \
+            -dname "CN=NASAQ, OU=Mobile, O=NASAQ, C=SD" \
+            -noprompt
+
+      - name: Encrypt backup
+        env:
+          BACKUP_PASSWORD: ${{ secrets.NASAQ_BACKUP_PASSWORD }}
+        run: |
+          test -n "$BACKUP_PASSWORD" || exit 1
+
+          openssl enc -aes-256-cbc \
+            -pbkdf2 \
+            -salt \
+            -in nasaq-release.jks \
+            -out nasaq-release.jks.enc \
+            -pass env:BACKUP_PASSWORD
+
+          rm nasaq-release.jks
+
+      - name: Upload encrypted backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: NASAQ-Encrypted-Signing-Key
+          path: nasaq-release.jks.enc
+          retention-days: 7
