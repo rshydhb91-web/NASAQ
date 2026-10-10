@@ -46,6 +46,27 @@ jobs:
 
           rm nasaq-release.jks
 
+      - name: Verify encrypted signing backup
+        env:
+          BACKUP_PASSWORD: ${{ secrets.NASAQ_BACKUP_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.NASAQ_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          openssl enc -d -aes-256-cbc \
+            -pbkdf2 \
+            -in nasaq-release.jks.enc \
+            -out verified.jks \
+            -pass env:BACKUP_PASSWORD
+
+          keytool -list \
+            -keystore verified.jks \
+            -storepass:env KEY_PASSWORD \
+            -alias nasaq > /dev/null
+
+          rm verified.jks
+          echo "Signing backup verified successfully"
+
       - name: Upload encrypted backup
         uses: actions/upload-artifact@v4
         with:
