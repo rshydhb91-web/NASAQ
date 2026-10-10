@@ -1,3 +1,4 @@
+
 name: Build NASAQ APK
 
 on:
@@ -30,6 +31,27 @@ jobs:
         run: |
           flutter create --platforms=android --project-name nasaq_app --org com.nasaq .
 
+      - name: Enable Internet permission
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("android/app/src/main/AndroidManifest.xml")
+          s = p.read_text()
+
+          permission = '<uses-permission android:name="android.permission.INTERNET" />'
+
+          if permission not in s:
+              s = s.replace(
+                  "<application",
+                  permission + "\n    <application",
+                  1
+              )
+              p.write_text(s)
+
+          print("Internet permission enabled")
+          PY
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -40,10 +62,16 @@ jobs:
         run: |
           APK=build/app/outputs/flutter-apk/app-release.apk
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+
           echo "=== APK SIZE ==="
           ls -lh "$APK"
+
           echo "=== PACKAGE INFORMATION ==="
           "$BUILD_TOOLS/aapt" dump badging "$APK" | head -30
+
+          echo "=== INTERNET PERMISSION ==="
+          "$BUILD_TOOLS/aapt" dump permissions "$APK" | grep android.permission.INTERNET
+
           echo "=== SIGNATURE VERIFICATION ==="
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
 
