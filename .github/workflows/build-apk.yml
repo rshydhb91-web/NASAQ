@@ -6,6 +6,8 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '.github/workflows/create-signing-key.yml'
 
 jobs:
   build:
@@ -38,30 +40,97 @@ jobs:
 
           p = Path("android/app/src/main/AndroidManifest.xml")
           s = p.read_text()
-
           permission = '<uses-permission android:name="android.permission.INTERNET" />'
 
           if permission not in s:
-              s = s.replace(
-                  "<application",
-                  permission + "\n    <application",
-                  1
-              )
+              s = s.replace("<application", permission + "\n    <application", 1)
               p.write_text(s)
 
           print("Internet permission enabled")
           PY
 
+      - name: Decrypt NASAQ signing key
+        env:
+          BACKUP_PASSWORD: ${{ secrets.NASAQ_BACKUP_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.NASAQ_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          test -n "$BACKUP_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          test -f nasaq-release.jks.enc
+
+          openssl enc -d -aes-256-cbc \
+            -pbkdf2 \
+            -in nasaq-release.jks.enc \
+            -out android/app/nasaq-release.jks \
+            -pass env:BACKUP_PASSWORD
+
+          keytool -list \
+            -keystore android/app/nasaq-release.jks \
+            -storepass:env KEY_PASSWORD \
+            -alias nasaq > /dev/null
+
+          echo "Signing key verified"
+
+      - name: Configure release signing
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("android/app/build.gradle.kts")
+          s = p.read_text()
+
+          old = 'signingConfig = signingConfigs.getByName("debug")'
+
+          if old not in s:
+              raise SystemExit("Expected Flutter signing configuration not found")
+
+          if "signingConfigs {" in s:
+              raise SystemExit("Unexpected existing signing configuration")
+
+          config = '''
+              signingConfigs {
+                  create("nasaqRelease") {
+                      storeFile = file("nasaq-release.jks")
+                      storePassword = System.getenv("NASAQ_KEYSTORE_PASSWORD")
+                      keyAlias = "nasaq"
+                      keyPassword = System.getenv("NASAQ_KEYSTORE_PASSWORD")
+                  }
+              }
+
+          '''
+
+          if "buildTypes {" not in s:
+              raise SystemExit("Android buildTypes section not found")
+
+          s = s.replace("buildTypes {", config + "buildTypes {", 1)
+          s = s.replace(
+              old,
+              'signingConfig = signingConfigs.getByName("nasaqRelease")',
+              1
+          )
+
+          p.write_text(s)
+          print("NASAQ release signing configured")
+          PY
+
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Release APK
+      - name: Build signed release APK
+        env:
+          NASAQ_KEYSTORE_PASSWORD: ${{ secrets.NASAQ_KEYSTORE_PASSWORD }}
         run: flutter build apk --release
 
-      - name: Check APK information
+      - name: Verify APK and signature
         run: |
+          set -euo pipefail
+
           APK=build/app/outputs/flutter-apk/app-release.apk
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+
+          test -f "$APK"
 
           echo "=== APK SIZE ==="
           ls -lh "$APK"
@@ -75,8 +144,14 @@ jobs:
           echo "=== SIGNATURE VERIFICATION ==="
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
 
-      - name: Upload APK
+          if "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
+            echo "ERROR: APK is debug-signed"
+            exit 1
+          fi
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: NASAQ-Release-APK
+          name: NASAQ-Signed-Release-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
